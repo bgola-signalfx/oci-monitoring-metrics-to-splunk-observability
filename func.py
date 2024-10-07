@@ -34,6 +34,12 @@ logger = logging.getLogger()
 
 X_SF_TOKEN_HEADER = 'X-SF-Token'
 
+# Global session reused between invocations
+
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+session.mount('https://', adapter)
+
 
 # Functions
 
@@ -157,25 +163,21 @@ def send_to_splunk_o11y(splunk_metrics) -> None:
         logger.info('Splunk Observability forwarding is disabled - dropping data')
         return
 
-    with requests.Session() as session:
-        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
-        session.mount('https://', adapter)
+    post_url = f'https://ingest.{api_realm}.signalfx.com/v2/datapoint'
+    api_headers = {'Content-Type': 'application/json', X_SF_TOKEN_HEADER: api_token}
 
-        post_url = f'https://ingest.{api_realm}.signalfx.com/v2/datapoint'
-        api_headers = {'Content-Type': 'application/json', X_SF_TOKEN_HEADER: api_token}
+    sorted_splunk_metrics = sorted(splunk_metrics, key=lambda dp: dp['timestamp'])
+    message_body = {'gauge': sorted_splunk_metrics}
 
-        sorted_splunk_metrics = sorted(splunk_metrics, key=lambda dp: dp['timestamp'])
-        message_body = {'gauge': sorted_splunk_metrics}
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            f'POST to Splunk Observability: {post_url}\n'
+            f'Headers: {json.dumps(with_obfuscated_sf_token(api_headers))}\n'
+            f'Content: {json.dumps(message_body)}')
+    response = session.post(post_url, data=json.dumps(message_body), headers=api_headers)
 
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                f'POST to Splunk Observability: {post_url}\n'
-                f'Headers: {json.dumps(with_obfuscated_sf_token(api_headers))}\n'
-                f'Content: {json.dumps(message_body)}')
-        response = session.post(post_url, data=json.dumps(message_body), headers=api_headers)
-
-        if response.status_code != 200:
-            raise Exception(f'Error sending metrics to Splunk Observability: {response.status_code} {response.reason}')
+    if response.status_code != 200:
+        raise Exception(f'Error sending metrics to Splunk Observability: {response.status_code} {response.reason}')
 
 
 def get_dictionary_value(dictionary: dict, key: str) -> any:
